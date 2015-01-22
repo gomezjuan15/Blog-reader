@@ -1,20 +1,25 @@
 package com.treehouse.gaara.blogreader;
 
-import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.ListActivity;
 import android.content.Context;
-import android.content.res.Resources;
+import android.content.Intent;
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
+import android.net.Uri;
 import android.os.AsyncTask;
 import android.os.Bundle;
+import android.text.Html;
 import android.util.Log;
-import android.view.Menu;
-import android.view.MenuItem;
-import android.widget.ArrayAdapter;
+import android.view.View;
+import android.widget.ListView;
+import android.widget.ProgressBar;
+import android.widget.SimpleAdapter;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import org.json.JSONArray;
+import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.IOException;
@@ -24,6 +29,8 @@ import java.io.Reader;
 import java.net.HttpURLConnection;
 import java.net.MalformedURLException;
 import java.net.URL;
+import java.util.ArrayList;
+import java.util.HashMap;
 
 
 public class MainListActivity extends ListActivity {
@@ -31,14 +38,21 @@ public class MainListActivity extends ListActivity {
     protected String [] mAndroidNames;
     public static final int NUMBER_OF_POSTS = 20;
     public static final String TAG = MainListActivity.class.getSimpleName();
+    private static final String TITLE = "title";
+    private static final String AUTHOR = "author";
+    protected JSONObject mBlogData;
+    protected ProgressBar mProgressBar;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main_list);
 
+        mProgressBar = (ProgressBar) findViewById(R.id.progressBar);
+
         if(isNetworkAvailable()) {
 
+            mProgressBar.setVisibility(View.VISIBLE);
             GetBlogPostsTask getBlogPostsTask = new GetBlogPostsTask();
             getBlogPostsTask.execute();
         } else {
@@ -47,27 +61,74 @@ public class MainListActivity extends ListActivity {
 //        Toast.makeText(this, getString(R.string.no_items), Toast.LENGTH_LONG).show();
     }
 
-
     @Override
-    public boolean onCreateOptionsMenu(Menu menu) {
-        // Inflate the menu; this adds items to the action bar if it is present.
-        getMenuInflater().inflate(R.menu.menu_main_list, menu);
-        return true;
+    protected void onListItemClick(ListView listView, View view, int position, long id) {
+
+        super.onListItemClick(listView, view, position, id);
+
+        try {
+            JSONArray jsonPosts = mBlogData.getJSONArray("posts");
+            JSONObject jsonPost = jsonPosts.getJSONObject(position);
+            String blogUrl = jsonPost.getString("url");
+
+            Intent intent = new Intent(this, BlogWebViewActivity.class);
+            intent.setData(Uri.parse(blogUrl));
+            startActivity(intent);
+
+        } catch (JSONException e) {
+            logException(e);
+        }
     }
 
-    @Override
-    public boolean onOptionsItemSelected(MenuItem item) {
-        // Handle action bar item clicks here. The action bar will
-        // automatically handle clicks on the Home/Up button, so long
-        // as you specify a parent activity in AndroidManifest.xml.
-        int id = item.getItemId();
 
-        //noinspection SimplifiableIfStatement
-        if (id == R.id.action_settings) {
-            return true;
+
+    private void handleBlogResponse() {
+
+        mProgressBar.setVisibility(View.INVISIBLE);
+
+        if(mBlogData == null) {
+            updateDisplayForError();
+        } else {
+            try {
+                JSONArray jsonPosts = mBlogData.getJSONArray("posts");
+                ArrayList<HashMap<String, String>> blogPosts = new ArrayList<HashMap<String, String>>();
+
+                for(int i = 0; i < jsonPosts.length(); i++) {
+                    JSONObject post = jsonPosts.getJSONObject(i);
+                    String title = post.getString(TITLE);
+                    title = Html.fromHtml(title).toString();
+                    String author = post.getString(AUTHOR);
+                    author = Html.fromHtml(author).toString();
+
+                    HashMap<String, String> blogPost = new HashMap<String, String>();
+                    blogPost.put(TITLE, title);
+                    blogPost.put(AUTHOR, author);
+                    blogPosts.add(blogPost);
+                }
+
+                String[] keys = {TITLE, AUTHOR};
+                int[] ids = {android.R.id.text1, android.R.id.text2};
+                SimpleAdapter adapter = new SimpleAdapter(this, blogPosts, android.R.layout.simple_list_item_2, keys, ids);
+
+                setListAdapter(adapter);
+
+            } catch (JSONException e) {
+                logException(e);
+            }
         }
 
-        return super.onOptionsItemSelected(item);
+    }
+
+    private void updateDisplayForError() {
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle(getString(R.string.error_title));
+        builder.setMessage(getString(R.string.error_message));
+        builder.setPositiveButton(android.R.string.ok, null);
+        AlertDialog dialog = builder.create();
+        dialog.show();
+
+        TextView emptyTextView = (TextView) getListView().getEmptyView();
+        emptyTextView.setText(getString(R.string.no_items));
     }
 
     private boolean isNetworkAvailable() {
@@ -78,12 +139,17 @@ public class MainListActivity extends ListActivity {
         return (networkInfo != null && networkInfo.isConnected());
     }
 
-    private class GetBlogPostsTask extends AsyncTask<Object, Void, String>  {
+    private void logException(Exception e) {
+        Log.e(TAG, "Exception caught: " + e);
+    }
+
+    private class GetBlogPostsTask extends AsyncTask<Object, Void, JSONObject>  {
 
         @Override
-        protected String doInBackground(Object[] params) {
+        protected JSONObject doInBackground(Object[] params) {
 
             int responseCode = -1;
+            JSONObject jsonResponse = null;
 
             try {
                 URL blogFeedUrl = new URL("http://blog.teamtreehouse.com/api/get_recent_summary/?count=" + NUMBER_OF_POSTS);
@@ -91,41 +157,43 @@ public class MainListActivity extends ListActivity {
                 connection.connect();
 
                 responseCode = connection.getResponseCode();
-
-                if(responseCode == HttpURLConnection.HTTP_OK) {
-
+                if (responseCode == HttpURLConnection.HTTP_OK) {
                     InputStream inputStream = connection.getInputStream();
                     Reader reader = new InputStreamReader(inputStream);
-                    int contentLength = connection.getContentLength();
-                    char[] charArray = new char[contentLength];
-                    reader.read(charArray);
-                    String responseData = new String(charArray);
 
-                    JSONObject jsonResponse = new JSONObject(responseData);
-                    String status = jsonResponse.getString("status");
-                    Log.v(TAG, "Status: " + status);
-
-                    JSONArray posts = jsonResponse.getJSONArray("posts");
-
-                    for(int i = 0; i < posts.length(); i++) {
-                        JSONObject post = posts.getJSONObject(i);
-                        String title = post.getString("title");
-                        Log.v(TAG, "Post " + i + ": " + title);
+                    int nextCharacter; // read() returns an int, we cast it to char later
+                    StringBuffer responseData = new StringBuffer();
+                    while(true){ // Infinite loop, can only be stopped by a "break" statement
+                        nextCharacter = reader.read(); // read() without parameters returns one character
+                        if(nextCharacter == -1) // A return value of -1 means that we reached the end
+                            break;
+                        responseData.append((char) nextCharacter); // The += operator appends the character to the end of the string
                     }
 
-                } else {
+                    jsonResponse = new JSONObject(responseData.toString());
+                }
+                else {
                     Log.i(TAG, "Unsuccessful HTTP Response Code: " + responseCode);
                 }
-
-            } catch (MalformedURLException e) {
-                Log.e(TAG, "Exception caught: " + e);
-            } catch (IOException e) {
-                Log.e(TAG, "Exception caught: " + e);
-            } catch (Exception e) {
-                Log.e(TAG, "Exception caught: " + e);
+            }
+            catch (MalformedURLException e) {
+                logException(e);
+            }
+            catch (IOException e) {
+                logException(e);
+            }
+            catch (Exception e) {
+                logException(e);
             }
 
-            return "Code: " + responseCode;
+            return jsonResponse;
+        }
+
+        @Override
+        protected void onPostExecute(JSONObject result) {
+
+            mBlogData = result;
+            handleBlogResponse();
         }
     }
 }
